@@ -1,4 +1,4 @@
-import React, { useMemo, useRef, useLayoutEffect, useState, useRef as useReactRef } from "react";
+import React, { useMemo, useRef, useLayoutEffect, useState } from "react";
 
 /**
  * Tree model (minimal)
@@ -55,6 +55,7 @@ const NODE_W = 220;
 const NODE_H = 56;
 const LEVEL_GAP_Y = 72;
 const SIBLING_GAP_X = 56;
+const END_ID = "__end__";
 
 /**
  * Flatten tree and compute a simple centered layout:
@@ -65,6 +66,8 @@ const SIBLING_GAP_X = 56;
 function computeLayout(root) {
   const boxes = new Map(); // id -> {x,y,w,h}
   const edges = []; // {fromId,toId,label?}
+  const leaves = [];
+  let maxDepth = 0;
 
   function subtreeWidth(node) {
     if (!node) return NODE_W;
@@ -84,6 +87,7 @@ function computeLayout(root) {
   function place(node, depth, leftX) {
     const y = depth * (NODE_H + LEVEL_GAP_Y);
     const w = NODE_W, h = NODE_H;
+    maxDepth = Math.max(maxDepth, depth);
 
     if (node.type === "branch") {
       const branchNodes = node.branches?.map(b => b.node) ?? [];
@@ -111,6 +115,7 @@ function computeLayout(root) {
     const children = node.children ?? [];
     if (children.length === 0) {
       boxes.set(node.id, { x: leftX + subtreeWidth(node) / 2 - w / 2, y, w, h });
+      leaves.push(node.id);
       return;
     }
 
@@ -131,7 +136,23 @@ function computeLayout(root) {
   const totalW = subtreeWidth(root);
   place(root, 0, 0);
 
-  return { boxes, edges, totalW };
+  // Add virtual end node aligned with root center
+  const rootBox = boxes.get(root.id);
+  const rootCenter = rootBox ? rootBox.x + rootBox.w / 2 : totalW / 2;
+  const endW = NODE_W;
+  const endH = NODE_H;
+  const endX = rootCenter - endW / 2;
+  const endY = (maxDepth + 1) * (NODE_H + LEVEL_GAP_Y);
+  const endBox = { x: endX, y: endY, w: endW, h: endH };
+  boxes.set(END_ID, endBox);
+
+  leaves.forEach((leafId) => {
+    edges.push({ fromId: leafId, toId: END_ID });
+  });
+
+  const layoutWidth = Math.max(totalW, endX + endW + 40);
+
+  return { boxes, edges, totalW: layoutWidth, endBox };
 }
 
 function bezierPath(from, to) {
@@ -148,8 +169,10 @@ function bezierPath(from, to) {
   return `M ${x1} ${y1} C ${c1x} ${c1y}, ${c2x} ${c2y}, ${x2} ${y2}`;
 }
 
-function NodeCard({ node, box, selected, onSelect, onAdd }) {
+function NodeCard({ node, box, selected, onSelect, onAdd, readOnly = false }) {
   const border = selected ? "2px solid #3b82f6" : "1px solid #e5e7eb";
+  const chipColor = node.type === "end" ? "#22c55e" : node.type === "branch" ? "#f97316" : node.type === "trigger" ? "#0ea5e9" : "#6366f1";
+  const chipBg = node.type === "end" ? "#dcfce7" : node.type === "branch" ? "#fff7ed" : node.type === "trigger" ? "#e0f2fe" : "#eef2ff";
   return (
     <div
       onClick={() => onSelect(node.id)}
@@ -173,7 +196,7 @@ function NodeCard({ node, box, selected, onSelect, onAdd }) {
     >
       <div style={{ width: 10, height: 10, borderRadius: 3, background: "#94a3b8" }} />
       <div style={{ display: "flex", flexDirection: "column" }}>
-        <div style={{ fontSize: 11, fontWeight: 700, color: "#0ea5e9", letterSpacing: 0.2, textTransform: "uppercase" }}>
+        <div style={{ fontSize: 11, fontWeight: 700, color: chipColor, letterSpacing: 0.2, textTransform: "uppercase", background: chipBg, padding: "2px 6px", borderRadius: 6, width: "fit-content" }}>
           {node.type}
         </div>
         <div style={{ fontSize: 13, fontWeight: 600 }}>{node.title}</div>
@@ -183,26 +206,28 @@ function NodeCard({ node, box, selected, onSelect, onAdd }) {
       </div>
 
       {/* small "+" anchor like the product UI (visual only for demo) */}
-      <div
-        style={{
-          marginLeft: "auto",
-          width: 22,
-          height: 22,
-          borderRadius: 11,
-          border: "1px solid #cbd5e1",
-          display: "grid",
-          placeItems: "center",
-          color: "#334155",
-          fontWeight: 700,
-        }}
-        title="Add"
-        onClick={(e) => {
-          e.stopPropagation();
-          onAdd(node.id);
-        }}
-      >
-        +
-      </div>
+      {!readOnly && (
+        <div
+          style={{
+            marginLeft: "auto",
+            width: 22,
+            height: 22,
+            borderRadius: 11,
+            border: "1px solid #cbd5e1",
+            display: "grid",
+            placeItems: "center",
+            color: "#334155",
+            fontWeight: 700,
+          }}
+          title="Add"
+          onClick={(e) => {
+            e.stopPropagation();
+            onAdd(node.id);
+          }}
+        >
+          +
+        </div>
+      )}
     </div>
   );
 }
@@ -253,7 +278,7 @@ function createNode(type = "action") {
 export default function JourneyDemo() {
   const [tree, setTree] = useState(initialTree);
   const [selectedId, setSelectedId] = useState("n1");
-  const idSeq = useReactRef(9);
+  const idSeq = useRef(9);
 
   const nodeMap = useMemo(() => collectNodes(tree), [tree]);
   const nodeWithParent = useMemo(() => collectWithParents(tree), [tree]);
@@ -393,7 +418,7 @@ export default function JourneyDemo() {
           </svg>
 
           {/* Nodes layer */}
-          {Array.from(nodeMap.values()).map((n) => {
+          {[...Array.from(nodeMap.values()), { id: END_ID, type: "end", title: "End", props: {} }].map((n) => {
             const b = boxes.get(n.id);
             if (!b) return null;
             return (
@@ -402,8 +427,9 @@ export default function JourneyDemo() {
                 node={n}
                 box={{ ...b, x: b.x + offsetX }}
                 selected={n.id === selectedId}
-                onSelect={setSelectedId}
+                onSelect={(id) => id !== END_ID && setSelectedId(id)}
                 onAdd={addChild}
+                readOnly={n.id === END_ID}
               />
             );
           })}
